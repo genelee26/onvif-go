@@ -150,31 +150,60 @@ const pullMessagesHikvisionDualMotion = `<PullMessagesResponse xmlns="http://www
 </wsnt:NotificationMessage>
 </PullMessagesResponse>`
 
+// pullMessagesTPLinkCellMotion wraps a field capture from a TP-Link
+// TL-IPC44AW-COLOR (fw 1.0.13), which emits only the CellMotionDetector topic.
+// The NotificationMessage is verbatim; its SimpleItems put Value before Name.
+const pullMessagesTPLinkCellMotion = `<PullMessagesResponse xmlns="http://www.onvif.org/ver10/events/wsdl" xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2" xmlns:wsa5="http://www.w3.org/2005/08/addressing" xmlns:tt="http://www.onvif.org/ver10/schema">
+<CurrentTime>2026-10-12T07:09:18Z</CurrentTime>
+<TerminationTime>2026-10-12T07:14:18Z</TerminationTime>
+<wsnt:NotificationMessage><wsnt:SubscriptionReference><wsa5:Address></wsa5:Address></wsnt:SubscriptionReference><wsnt:Topic Dialect="http://www.onvif.org/ver10/tev/topicExpression/ConcreteSet">tns1:RuleEngine/CellMotionDetector/Motion</wsnt:Topic><wsnt:Message><tt:Message PropertyOperation="Changed" UtcTime="2026-10-12T07:09:18Z"><tt:Source><tt:SimpleItem Value="VideoSourceToken" Name="VideoSourceConfigurationToken"></tt:SimpleItem><tt:SimpleItem Value="VideoAnalyticsToken" Name="VideoAnalyticsConfigurationToken"></tt:SimpleItem><tt:SimpleItem Value="MyMotionDetectorRule" Name="Rule"></tt:SimpleItem></tt:Source><tt:Data><tt:SimpleItem Value="true" Name="IsMotion"></tt:SimpleItem></tt:Data></tt:Message></wsnt:Message></wsnt:NotificationMessage>
+</PullMessagesResponse>`
+
 // TestParseMotionAlarmFromPullMessages runs field captures through the real
 // PullMessages decode path, so the helper is tested on what the library
 // actually delivers.
 func TestParseMotionAlarmFromPullMessages(t *testing.T) {
-	caller := newFakeCaller(func(string, string) (string, error) {
-		return pullMessagesHikvisionDualMotion, nil
-	})
-
-	messages, err := New(caller).PullMessages(context.Background(), "http://fake/sub/1", 10*time.Second, 5)
-	if err != nil {
-		t.Fatalf("PullMessages: %v", err)
+	tests := []struct {
+		name string
+		body string
+		want []MotionAlarm
+	}{
+		{
+			name: "Hikvision dual topic",
+			body: pullMessagesHikvisionDualMotion,
+			want: []MotionAlarm{
+				{Active: false, Source: "VideoSource_1"},
+				{Active: false, Source: "VideoSourceToken"},
+			},
+		},
+		{
+			name: "TP-Link CellMotionDetector",
+			body: pullMessagesTPLinkCellMotion,
+			want: []MotionAlarm{{Active: true, Source: "VideoSourceToken"}},
+		},
 	}
 
-	if len(messages) != 2 {
-		t.Fatalf("messages = %d, want 2", len(messages))
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			caller := newFakeCaller(func(string, string) (string, error) {
+				return tt.body, nil
+			})
 
-	want := []MotionAlarm{
-		{Active: false, Source: "VideoSource_1"},
-		{Active: false, Source: "VideoSourceToken"},
-	}
-	for i, msg := range messages {
-		got, ok := ParseMotionAlarm(msg)
-		if !ok || got != want[i] {
-			t.Errorf("message %d (%s): ParseMotionAlarm = (%+v, %v), want (%+v, true)", i, msg.Topic, got, ok, want[i])
-		}
+			messages, err := New(caller).PullMessages(context.Background(), "http://fake/sub/1", 10*time.Second, 5)
+			if err != nil {
+				t.Fatalf("PullMessages: %v", err)
+			}
+
+			if len(messages) != len(tt.want) {
+				t.Fatalf("messages = %d, want %d", len(messages), len(tt.want))
+			}
+
+			for i, msg := range messages {
+				got, ok := ParseMotionAlarm(msg)
+				if !ok || got != tt.want[i] {
+					t.Errorf("message %d (%s): ParseMotionAlarm = (%+v, %v), want (%+v, true)", i, msg.Topic, got, ok, tt.want[i])
+				}
+			}
+		})
 	}
 }
